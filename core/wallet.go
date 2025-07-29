@@ -33,7 +33,9 @@ func (w *Wallet) GetAddress() string {
 
 func (w *Wallet) Sign(data []byte) ([]byte, error) {
 	r, s, err := ecdsa.Sign(rand.Reader, w.PrivateKey, data)
-	if err != nil {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("data to sign cannot be empty")
+	} else if err != nil {
 		return nil, err
 	}
 	return append(r.Bytes(), s.Bytes()...), nil
