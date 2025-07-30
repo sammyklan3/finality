@@ -33,5 +33,5 @@ go mod tidy
 ### 3. Run the node
 
 ```bash
-go run ./cmd/node
+go run ./blockchain
 ```
