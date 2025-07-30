@@ -2,10 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"finality/core"
-	"encoding/json"
+
+	"github.com/sammyklan3/finality/blockchain/core"
 )
 
 type APIServer struct {
@@ -24,7 +25,6 @@ func NewAPIServer(bc *core.Blockchain) *APIServer {
 		},
 	}
 }
-
 
 func (s *APIServer) Start() error {
 	http.HandleFunc("/blocks", s.handleGetBlocks)

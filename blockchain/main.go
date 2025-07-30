@@ -7,8 +7,8 @@ import (
 	"syscall"
 	"time"
 
-	"finality/core"
-	"finality/api"
+	"github.com/sammyklan3/finality/blockchain/api"
+	"github.com/sammyklan3/finality/blockchain/core"
 )
 
 func main() {
