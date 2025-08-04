@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"crypto/sha256"
 	"fmt"
 	"math/big"
 )
@@ -13,6 +14,11 @@ import (
 type Wallet struct {
 	PrivateKey *ecdsa.PrivateKey
 	PublicKey  *ecdsa.PublicKey
+}
+
+func hashData(data []byte) []byte {
+    h := sha256.Sum256(data)
+    return h[:]
 }
 
 // NewWallet creates a new Wallet with a generated ECDSA key pair.
@@ -35,7 +41,9 @@ func (w *Wallet) Sign(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("data to sign cannot be empty")
 	}
-	r, s, err := ecdsa.Sign(rand.Reader, w.PrivateKey, data)
+
+	hashedData := hashData(data)
+	r, s, err := ecdsa.Sign(rand.Reader, w.PrivateKey, hashedData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign data: %v", err)
 	}
@@ -50,7 +58,8 @@ func (w *Wallet) Verify(data []byte, sig []byte) bool {
 	s := big.Int{}
 	r.SetBytes(sig[:32])
 	s.SetBytes(sig[32:])
-	return ecdsa.Verify(w.PublicKey, data, &r, &s)
+	hashedData := hashData(data)
+	return ecdsa.Verify(w.PublicKey, hashedData, &r, &s)
 }
 
 func (w *Wallet) ExportPrivateKey() ([]byte, error) {
