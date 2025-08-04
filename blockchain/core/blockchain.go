@@ -34,3 +34,19 @@ func (bc *Blockchain) AddBlock(txns []Transaction) {
 func (bc *Blockchain) LatestBlock() *Block {
 	return &bc.Blocks[len(bc.Blocks)-1]
 }
+
+func (bc *Blockchain) IsValid() bool {
+	for i := 1; i < len(bc.Blocks); i++ {
+		current := bc.Blocks[i]
+		prev := bc.Blocks[i-1]
+
+		if current.Hash != current.CalculateHash() {
+			return false
+		}
+		if current.PrevHash != prev.Hash {
+			return false
+		}
+	}
+	return true
+}
+
