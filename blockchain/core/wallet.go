@@ -80,3 +80,19 @@ func (w *Wallet) ExportPublicKey() ([]byte, error) {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}), nil
 }
+
+func ImportPrivateKey(pemBytes []byte) (*Wallet, error) {
+   block, _ := pem.Decode(pemBytes)
+   if block == nil || block.Type != "PRIVATE KEY" {
+       return nil, fmt.Errorf("invalid PEM format")
+   }
+   key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+   if err != nil {
+       return nil, err
+   }
+   priv, ok := key.(*ecdsa.PrivateKey)
+   if !ok {
+       return nil, fmt.Errorf("not an ECDSA private key")
+   }
+   return &Wallet{PrivateKey: priv, PublicKey: &priv.PublicKey}, nil
+}
