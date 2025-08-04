@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bytes"
+	"encoding/gob"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,10 +14,18 @@ type Block struct {
 	Transactions []Transaction
 	PrevHash     string
 	Hash         string
+	Nonce        int
 }
 
 func (b *Block) CalculateHash() string {
-	data := fmt.Sprintf("%d%d%s", b.Index, b.Timestamp, b.PrevHash)
+	var txBuffer bytes.Buffer
+	enc := gob.NewEncoder(&txBuffer)
+	err := enc.Encode(b.Transactions)
+	if err != nil {
+		panic(err)
+	}
+
+	data := fmt.Sprintf("%d%d%s%x%d", b.Index, b.Timestamp, b.PrevHash, txBuffer.Bytes(), b.Nonce)
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])
 }
