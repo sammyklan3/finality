@@ -34,8 +34,11 @@ func NewWallet() *Wallet {
 }
 
 func (w *Wallet) GetAddress() string {
-	return fmt.Sprintf("%x", w.PublicKey.X)
+    pubKeyBytes := append(w.PublicKey.X.Bytes(), w.PublicKey.Y.Bytes()...)
+    hashed := sha256.Sum256(pubKeyBytes)
+    return fmt.Sprintf("%x", hashed[:20]) // 20 byte address
 }
+
 
 func (w *Wallet) Sign(data []byte) ([]byte, error) {
 	if len(data) == 0 {
