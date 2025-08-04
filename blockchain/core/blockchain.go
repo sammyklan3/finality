@@ -31,6 +31,6 @@ func (bc *Blockchain) AddBlock(txns []Transaction) {
 	bc.Blocks = append(bc.Blocks, newBlock)
 }
 
-func (bc *Blockchain) LatestBlock() Block {
-	return bc.Blocks[len(bc.Blocks)-1]
+func (bc *Blockchain) LatestBlock() *Block {
+	return &bc.Blocks[len(bc.Blocks)-1]
 }
