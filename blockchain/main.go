@@ -18,22 +18,18 @@ func main() {
 
 	apiServer := api.NewAPIServer(chain)
 
-	// Create context that listens for interrupt signals
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Start server in a goroutine
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			fmt.Println("API server error:", err)
 		}
 	}()
 
-	// Wait for interrupt
 	<-ctx.Done()
 	fmt.Println("\nShutting down Finality node...")
 
-	// Give server time to shut down gracefully
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
