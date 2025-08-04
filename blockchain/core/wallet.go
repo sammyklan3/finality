@@ -2,12 +2,12 @@ package core
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"crypto/elliptic"
 )
 
 type Wallet struct {
@@ -32,11 +32,12 @@ func (w *Wallet) GetAddress() string {
 }
 
 func (w *Wallet) Sign(data []byte) ([]byte, error) {
-	r, s, err := ecdsa.Sign(rand.Reader, w.PrivateKey, data)
 	if len(data) == 0 {
 		return nil, fmt.Errorf("data to sign cannot be empty")
-	} else if err != nil {
-		return nil, err
+	}
+	r, s, err := ecdsa.Sign(rand.Reader, w.PrivateKey, data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign data: %v", err)
 	}
 	return append(r.Bytes(), s.Bytes()...), nil
 }
