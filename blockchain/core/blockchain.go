@@ -2,10 +2,12 @@ package core
 
 import (
 	"time"
+	"sync"
 )
 
 type Blockchain struct {
 	Blocks []Block
+	mu     sync.Mutex
 }
 
 func NewBlockchain() *Blockchain {
@@ -20,6 +22,9 @@ func NewBlockchain() *Blockchain {
 }
 
 func (bc *Blockchain) AddBlock(txns []Transaction) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
 	prev := bc.Blocks[len(bc.Blocks)-1]
 	newBlock := Block{
 		Index:        prev.Index + 1,
