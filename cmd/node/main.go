@@ -1,37 +1,57 @@
 package main
 
 import (
-	"fmt"
-	"log"
+    "flag"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+	"strings"
 
-	"finality/core"
+    "finality/internal/p2p"
 )
 
 func main() {
-	bc := core.NewBlockchain()
+    // Command-line flags
+    udpPort := flag.Int("udp-port", 30303, "UDP port for peer discovery")
+    tcpPort := flag.Int("tcp-port", 30304, "TCP port for node connections")
+    bootstrapPeers := flag.String("bootnodes", "", "Comma-separated list of bootstrap peers (ip:port)")
+    nodeID := flag.String("node-id", "node123", "Unique node ID") // ideally generate properly later
 
-	sender, _ := core.NewKeyPair()
-	receiver, _ := core.NewKeyPair()
+    flag.Parse()
 
-	tx := core.Transaction{
-		From:   core.PublicKeyToHex(sender.PublicKey),
-		To:     core.PublicKeyToHex(receiver.PublicKey),
-		Amount: 10,
-	}
-	if err := tx.SignTransaction(sender); err != nil {
-		log.Fatal(err)
-	}
+    // Parse bootstrap peers into a slice
+    var bootnodes []string
+    if *bootstrapPeers != "" {
+        bootnodes = splitAndTrim(*bootstrapPeers)
+    }
 
-	if err := bc.AddBlock([]core.Transaction{tx}, sender, 3); err != nil {
-		log.Fatal(err)
-	}
+    // Start UDP discovery
+    listenAddr := fmt.Sprintf("0.0.0.0:%d", *udpPort)
+    discovery, err := p2p.NewDiscovery(*nodeID, listenAddr, bootnodes)
+    if err != nil {
+        log.Fatalf("Failed to start discovery: %v", err)
+    }
+    discovery.Start()
+    defer discovery.Stop()
 
-	for _, block := range bc.Blocks {
-		fmt.Printf("\nBlock #%d\nHash: %s\nPrevHash: %s\n", block.Index, block.Hash, block.PrevHash)
-		for _, t := range block.Transactions {
-			fmt.Printf("TX from %s... to %s... amount %.2f\n", t.From[:10], t.To[:10], t.Amount)
-		}
-	}
+    fmt.Printf("Finality node started.\nUDP discovery listening on %s\nTCP connections will listen on 0.0.0.0:%d\n", listenAddr, *tcpPort)
 
-	fmt.Println("\nBlockchain valid?", bc.IsValid())
+    // TODO: Start TCP server on tcpPort, consensus, etc.
+
+    // Graceful shutdown on Ctrl+C
+    sigs := make(chan os.Signal, 1)
+    signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+    <-sigs
+    fmt.Println("\nShutting down node...")
+}
+
+// Helper to split comma-separated bootstrap peers and trim spaces
+func splitAndTrim(s string) []string {
+    var res []string
+    for _, p := range strings.Split(s, ",") {
+        res = append(res, strings.TrimSpace(p))
+    }
+    return res
 }
