@@ -1,11 +1,12 @@
-package core
+package tests
 
 import (
 	"testing"
+	"finality/internal/wallet"
 )
 
 func TestNewWallet(t *testing.T) {
-	wallet := NewWallet()
+	wallet := wallet.NewWallet()
 	if wallet.PrivateKey == nil {
 		t.Error("Expected PrivateKey to be non-nil")
 	}
@@ -18,7 +19,7 @@ func TestNewWallet(t *testing.T) {
 }
 
 func TestGetAddress(t *testing.T) {
-	wallet := NewWallet()
+	wallet := wallet.NewWallet()
 	address := wallet.GetAddress()
 	if len(address) != 40 {
 		t.Errorf("Expected address length of 40, got %d", len(address))
@@ -26,7 +27,7 @@ func TestGetAddress(t *testing.T) {
 }
 
 func TestSignAndVerify(t *testing.T) {
-	wallet := NewWallet()
+	wallet := wallet.NewWallet()
 	message := []byte("Hello, blockchain!")
 	sig, err := wallet.Sign(message)
 	if err != nil {
@@ -46,7 +47,7 @@ func TestSignAndVerify(t *testing.T) {
 }
 
 func TestSignEmptyData(t *testing.T) {
-	wallet := NewWallet()
+	wallet := wallet.NewWallet()
 	sig, err := wallet.Sign([]byte{})
 	if err == nil {
 		t.Error("Expected error when signing empty data")
@@ -57,7 +58,7 @@ func TestSignEmptyData(t *testing.T) {
 }
 
 func TestKeyExportImport(t *testing.T) {
-	originalWallet := NewWallet()
+	originalWallet := wallet.NewWallet()
 
 	privPEM, err := originalWallet.ExportPrivateKey()
 	if err != nil || privPEM == nil {
@@ -69,7 +70,7 @@ func TestKeyExportImport(t *testing.T) {
 		t.Fatalf("Failed to export public key: %v", err)
 	}
 
-	importedWallet, err := ImportPrivateKey(privPEM)
+	importedWallet, err := wallet.ImportPrivateKey(privPEM)
 	if err != nil || importedWallet == nil {
 		t.Fatalf("Failed to import wallet: %v", err)
 	}
