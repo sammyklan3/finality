@@ -24,10 +24,35 @@ func main() {
     bootstrapPeers := flag.String("bootnodes", "", "Comma-separated list of bootstrap peers (ip:port)")
     flag.Parse()
 
+    // Parse bootstrap peers into a slice BEFORE usage
+    var bootnodes []string
+    if *bootstrapPeers != "" {
+        bootnodes = splitAndTrim(*bootstrapPeers)
+    }
+
     // Generate ECDSA private key for the node
     privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
     if err != nil {
         log.Fatalf("Failed to generate node key: %v", err)
+    }
+
+    chainID := "finality-mainnet" // or configurable
+
+    listenTCPAddr := fmt.Sprintf("0.0.0.0:%d", *tcpPort)
+
+    node := p2p.NewNode(privKey, chainID, listenTCPAddr)
+
+    if err := node.Start(); err != nil {
+        log.Fatalf("Failed to start TCP server: %v", err)
+    }
+
+    // Connect to bootstrap peers discovered via UDP
+    for _, addr := range bootnodes {
+        go func(a string) {
+            if err := node.Connect(a); err != nil {
+                log.Printf("Failed to connect to peer %s: %v", a, err)
+            }
+        }(addr)
     }
 
     // Derive node ID as sha256(pubkeyBytes)
@@ -36,12 +61,6 @@ func main() {
     nodeIDHex := hex.EncodeToString(nodeID[:])
 
     fmt.Printf("Node ID: %s\n", nodeIDHex)
-
-    // Parse bootstrap peers into a slice
-    var bootnodes []string
-    if *bootstrapPeers != "" {
-        bootnodes = splitAndTrim(*bootstrapPeers)
-    }
 
     // Start UDP discovery with generated NodeID
     listenAddr := fmt.Sprintf("0.0.0.0:%d", *udpPort)
@@ -53,8 +72,6 @@ func main() {
     defer discovery.Stop()
 
     fmt.Printf("Finality node started.\nUDP discovery listening on %s\nTCP connections will listen on 0.0.0.0:%d\n", listenAddr, *tcpPort)
-
-    // TODO: Start TCP server on tcpPort, consensus, etc.
 
     // Graceful shutdown on Ctrl+C
     sigs := make(chan os.Signal, 1)
