@@ -26,10 +26,10 @@ func (bc *Blockchain) AddBlock(txns []Transaction, kp *KeyPair, difficulty int) 
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	// Verify all transactions
+	// Verify transactions
 	for _, tx := range txns {
 		if !tx.Verify() {
-			return fmt.Errorf("invalid transaction detected")
+			return fmt.Errorf("invalid transaction signature")
 		}
 	}
 
@@ -41,10 +41,8 @@ func (bc *Blockchain) AddBlock(txns []Transaction, kp *KeyPair, difficulty int) 
 		PrevHash:     prev.Hash,
 	}
 
-	// Mine with Proof-of-Work
 	newBlock.MineBlock(difficulty)
 
-	// Sign block
 	if err := newBlock.SignBlock(kp); err != nil {
 		return err
 	}
@@ -52,6 +50,7 @@ func (bc *Blockchain) AddBlock(txns []Transaction, kp *KeyPair, difficulty int) 
 	bc.Blocks = append(bc.Blocks, newBlock)
 	return nil
 }
+
 
 
 func (bc *Blockchain) LatestBlock() *Block {
