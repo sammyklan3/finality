@@ -1,13 +1,18 @@
 package main
 
 import (
+    "crypto/ecdsa"
+    "crypto/elliptic"
+    "crypto/rand"
+    "crypto/sha256"
+    "encoding/hex"
     "flag"
     "fmt"
     "log"
     "os"
     "os/signal"
+    "strings"
     "syscall"
-	"strings"
 
     "finality/internal/p2p"
 )
@@ -17,9 +22,20 @@ func main() {
     udpPort := flag.Int("udp-port", 30303, "UDP port for peer discovery")
     tcpPort := flag.Int("tcp-port", 30304, "TCP port for node connections")
     bootstrapPeers := flag.String("bootnodes", "", "Comma-separated list of bootstrap peers (ip:port)")
-    nodeID := flag.String("node-id", "node123", "Unique node ID") // ideally generate properly later
-
     flag.Parse()
+
+    // Generate ECDSA private key for the node
+    privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+    if err != nil {
+        log.Fatalf("Failed to generate node key: %v", err)
+    }
+
+    // Derive node ID as sha256(pubkeyBytes)
+    pubKeyBytes := append(privKey.PublicKey.X.Bytes(), privKey.PublicKey.Y.Bytes()...)
+    nodeID := sha256.Sum256(pubKeyBytes)
+    nodeIDHex := hex.EncodeToString(nodeID[:])
+
+    fmt.Printf("Node ID: %s\n", nodeIDHex)
 
     // Parse bootstrap peers into a slice
     var bootnodes []string
@@ -27,9 +43,9 @@ func main() {
         bootnodes = splitAndTrim(*bootstrapPeers)
     }
 
-    // Start UDP discovery
+    // Start UDP discovery with generated NodeID
     listenAddr := fmt.Sprintf("0.0.0.0:%d", *udpPort)
-    discovery, err := p2p.NewDiscovery(*nodeID, listenAddr, bootnodes)
+    discovery, err := p2p.NewDiscovery(nodeIDHex, listenAddr, bootnodes)
     if err != nil {
         log.Fatalf("Failed to start discovery: %v", err)
     }
