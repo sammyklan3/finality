@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/sammyklan3/finality/blockchain/core"
@@ -27,25 +29,25 @@ func NewAPIServer(bc *core.Blockchain) *APIServer {
 }
 
 func (s *APIServer) Start() error {
-	http.HandleFunc("/blocks", s.handleGetBlocks)
-	http.HandleFunc("/wallet/address", s.handleWalletAddress)
-	http.HandleFunc("/wallet/sign", s.handleWalletSign)
-	http.HandleFunc("/wallet/verify", s.handleWalletVerify)
-	http.HandleFunc("/wallet/keys", s.handleWalletKeys)
+    http.HandleFunc("/blocks", s.handleGetBlocks)
+    http.HandleFunc("/wallet/address", s.handleWalletAddress)
+    http.HandleFunc("/wallet/sign", s.handleWalletSign)
+    http.HandleFunc("/wallet/verify", s.handleWalletVerify)
+    http.HandleFunc("/wallet/keys", s.handleWalletKeys)
+    http.HandleFunc("/wallet/new", s.handleNewWallet)
+    http.HandleFunc("/wallet/import", s.handleImportWallet)
 
-	fmt.Println("API server listening on http://localhost:8080")
-	return s.server.ListenAndServe()
+    fmt.Println("API server listening on http://localhost:8080")
+    return s.server.ListenAndServe()
 }
+
 
 func (s *APIServer) Shutdown(ctx context.Context) error {
 	fmt.Println("Shutting down API server...")
 	return s.server.Shutdown(ctx)
 }
 
-func (s *APIServer) handleGetBlocks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(s.Blockchain.Blocks)
-}
+// ================= Wallet Handlers =================
 
 func (s *APIServer) handleWalletAddress(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -58,7 +60,10 @@ func (s *APIServer) handleWalletSign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message string `json:"message"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
 	sig, err := s.Wallet.Sign([]byte(req.Message))
 	if err != nil {
@@ -67,7 +72,7 @@ func (s *APIServer) handleWalletSign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"signature": fmt.Sprintf("%x", sig),
+		"signature": hex.EncodeToString(sig),
 	})
 }
 
@@ -76,12 +81,14 @@ func (s *APIServer) handleWalletVerify(w http.ResponseWriter, r *http.Request) {
 		Message   string `json:"message"`
 		Signature string `json:"signature"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
-	sigBytes := make([]byte, 64)
-	_, err := fmt.Sscanf(req.Signature, "%x", &sigBytes)
+	sigBytes, err := hex.DecodeString(req.Signature)
 	if err != nil {
-		http.Error(w, "Invalid signature format", http.StatusBadRequest)
+		http.Error(w, "Invalid signature hex", http.StatusBadRequest)
 		return
 	}
 
@@ -100,4 +107,52 @@ func (s *APIServer) handleWalletKeys(w http.ResponseWriter, r *http.Request) {
 		"private_key": string(priv),
 		"public_key":  string(pub),
 	})
+}
+
+func (s *APIServer) handleNewWallet(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    s.Wallet = core.NewWallet()
+    priv, _ := s.Wallet.ExportPrivateKey()
+    pub, _ := s.Wallet.ExportPublicKey()
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{
+        "address":     s.Wallet.GetAddress(),
+        "private_key": string(priv),
+        "public_key":  string(pub),
+    })
+}
+
+
+func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
+	keyPem, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read key", http.StatusBadRequest)
+		return
+	}
+
+	wallet, err := core.ImportPrivateKey(keyPem)
+	if err != nil {
+		http.Error(w, "Invalid private key", http.StatusBadRequest)
+		return
+	}
+
+	s.Wallet = wallet
+	pub, _ := wallet.ExportPublicKey()
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"address":    wallet.GetAddress(),
+		"public_key": string(pub),
+	})
+}
+
+// ================= Blockchain Handlers =================
+
+func (s *APIServer) handleGetBlocks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.Blockchain.Blocks)
 }
