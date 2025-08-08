@@ -45,7 +45,7 @@ func VerifySignature(pub ecdsa.PublicKey, data, rText, sText string) bool {
 	return valid
 }
 
-// PublicKeyToHex converts a public key to hex string for storage in Transaction.From
+// PublicKeyToHex converts public key to hex string
 func PublicKeyToHex(pub *ecdsa.PublicKey) string {
 	return hex.EncodeToString(append(pub.X.Bytes(), pub.Y.Bytes()...))
 }
