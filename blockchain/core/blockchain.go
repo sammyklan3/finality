@@ -3,6 +3,7 @@ package core
 import (
 	"time"
 	"sync"
+	"fmt"
 )
 
 type Blockchain struct {
@@ -21,9 +22,16 @@ func NewBlockchain() *Blockchain {
 	return &Blockchain{Blocks: []Block{genesis}}
 }
 
-func (bc *Blockchain) AddBlock(txns []Transaction) {
+func (bc *Blockchain) AddBlock(txns []Transaction, kp *KeyPair, difficulty int) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
+
+	// Verify all transactions
+	for _, tx := range txns {
+		if !tx.Verify() {
+			return fmt.Errorf("invalid transaction detected")
+		}
+	}
 
 	prev := bc.Blocks[len(bc.Blocks)-1]
 	newBlock := Block{
@@ -32,9 +40,19 @@ func (bc *Blockchain) AddBlock(txns []Transaction) {
 		Transactions: txns,
 		PrevHash:     prev.Hash,
 	}
-	newBlock.Hash = newBlock.CalculateHash()
+
+	// Mine with Proof-of-Work
+	newBlock.MineBlock(difficulty)
+
+	// Sign block
+	if err := newBlock.SignBlock(kp); err != nil {
+		return err
+	}
+
 	bc.Blocks = append(bc.Blocks, newBlock)
+	return nil
 }
+
 
 func (bc *Blockchain) LatestBlock() *Block {
 	return &bc.Blocks[len(bc.Blocks)-1]
