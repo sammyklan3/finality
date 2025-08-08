@@ -1,41 +1,44 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"os/signal"
-	"syscall"
-	"time"
+	"log"
 
-	"github.com/sammyklan3/finality/blockchain/api"
 	"github.com/sammyklan3/finality/blockchain/core"
 )
 
 func main() {
-	chain := core.NewBlockchain()
-	fmt.Println("Genesis block created:")
-	fmt.Println(chain.LatestBlock())
+	// Create blockchain
+	bc := core.NewBlockchain()
 
-	apiServer := api.NewAPIServer(chain)
+	// Create sender & receiver keys
+	sender, _ := core.NewKeyPair()
+	receiver, _ := core.NewKeyPair()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	go func() {
-		if err := apiServer.Start(); err != nil {
-			fmt.Println("API server error:", err)
-		}
-	}()
-
-	<-ctx.Done()
-	fmt.Println("\nShutting down Finality node...")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := apiServer.Shutdown(shutdownCtx); err != nil {
-		fmt.Println("Error during shutdown:", err)
-	} else {
-		fmt.Println("Finality node stopped cleanly.")
+	// Create and sign a transaction
+	tx := core.Transaction{
+		From:   core.PublicKeyToHex(sender.PublicKey),
+		To:     core.PublicKeyToHex(receiver.PublicKey),
+		Amount: 10,
 	}
+	if err := tx.SignTransaction(sender); err != nil {
+		log.Fatal(err)
+	}
+
+	// Add block with transaction
+	err := bc.AddBlock([]core.Transaction{tx}, sender, 3) // difficulty=3
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Print chain
+	for _, block := range bc.Blocks {
+		fmt.Printf("\nBlock #%d\nHash: %s\nPrevHash: %s\n", block.Index, block.Hash, block.PrevHash)
+		for _, t := range block.Transactions {
+			fmt.Printf("TX from %s to %s amount %.2f\n", t.From[:10], t.To[:10], t.Amount)
+		}
+	}
+
+	// Validate chain
+	fmt.Println("\nBlockchain valid?", bc.IsValid())
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"crypto/ecdsa"
 )
 
 type Block struct {
@@ -15,6 +16,8 @@ type Block struct {
 	PrevHash     string
 	Hash         string
 	Nonce        int
+	R            string // block signature r
+	S            string // block signature s
 }
 
 func (b *Block) CalculateHash() string {
@@ -43,4 +46,36 @@ func NewBlock(index int, timestamp int64, transactions []Transaction, prevHash s
 
 func (b *Block) IsValid() bool {
 	return b.Hash == b.CalculateHash()
+}
+
+// SignBlock signs the block with a private key
+func (b *Block) SignBlock(kp *KeyPair) error {
+	r, s, err := kp.Sign(b.Hash)
+	if err != nil {
+		return err
+	}
+	b.R = r
+	b.S = s
+	return nil
+}
+
+// VerifyBlockSignature verifies the block's signature
+func (b *Block) VerifyBlockSignature(pub ecdsa.PublicKey) bool {
+	return VerifySignature(pub, b.Hash, b.R, b.S)
+}
+
+func (b *Block) MineBlock (difficulty int) {
+	target := ""
+	for i := 0; i < difficulty; i++ {
+		target += "0"
+	}
+
+	for {
+		b.Hash = b.CalculateHash()
+		if b.Hash[:difficulty] == target {
+			break
+		}
+
+		b.Nonce++
+	}
 }
