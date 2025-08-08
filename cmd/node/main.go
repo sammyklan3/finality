@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/sammyklan3/finality/blockchain/core"
+	"finality/core"
 )
 
 func main() {

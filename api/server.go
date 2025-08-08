@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/sammyklan3/finality/blockchain/core"
+	"finality/core"
 )
 
 type APIServer struct {
