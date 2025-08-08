@@ -9,11 +9,6 @@ import (
     "time"
 )
 
-type Peer struct {
-    NodeID  string
-    Address string
-}
-
 type Packet struct {
     Type       string   `json:"type"`
     NodeID     string   `json:"node_id"`
