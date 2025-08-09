@@ -23,32 +23,37 @@ func NewBlockchain() *Blockchain {
 }
 
 func (bc *Blockchain) AddBlock(txns []Transaction, kp *KeyPair, difficulty int) error {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
+    bc.mu.Lock()
+    defer bc.mu.Unlock()
 
-	// Verify transactions
-	for _, tx := range txns {
-		if !tx.Verify() {
-			return fmt.Errorf("invalid transaction signature")
-		}
-	}
+    // Verify transactions
+    for _, tx := range txns {
+        if !tx.Verify() {
+            return fmt.Errorf("invalid transaction signature")
+        }
+    }
 
-	prev := bc.Blocks[len(bc.Blocks)-1]
-	newBlock := Block{
-		Index:        prev.Index + 1,
-		Timestamp:    time.Now().Unix(),
-		Transactions: txns,
-		PrevHash:     prev.Hash,
-	}
+    prev := bc.Blocks[len(bc.Blocks)-1]
+    newBlock := Block{
+        Index:        prev.Index + 1,
+        Timestamp:    time.Now().Unix(),
+        Transactions: txns,
+        PrevHash:     prev.Hash,
+    }
 
-	newBlock.MineBlock(difficulty)
+    newBlock.MineBlock(difficulty)
 
-	if err := newBlock.SignBlock(kp); err != nil {
-		return err
-	}
+    if err := newBlock.SignBlock(kp); err != nil {
+        return err
+    }
 
-	bc.Blocks = append(bc.Blocks, newBlock)
-	return nil
+    // Prevent duplicates
+    if bc.HasBlock(newBlock.Hash) {
+        return fmt.Errorf("block already exists")
+    }
+
+    bc.Blocks = append(bc.Blocks, newBlock)
+    return nil
 }
 
 
@@ -70,5 +75,32 @@ func (bc *Blockchain) IsValid() bool {
 		}
 	}
 	return true
+}
+
+func (bc *Blockchain) HasBlock(hash string) bool {
+    bc.mu.Lock()
+    defer bc.mu.Unlock()
+
+    for _, b := range bc.Blocks {
+        if b.Hash == hash {
+            return true
+        }
+    }
+    return false
+}
+
+func (bc *Blockchain) AddBlockFromMempool(mp *Mempool, kp *KeyPair, difficulty int, maxTx int) error {
+    txns := mp.GetTransactionsForBlock(maxTx)
+    if len(txns) == 0 {
+        return fmt.Errorf("no transactions to mine")
+    }
+
+    if err := bc.AddBlock(txns, kp, difficulty); err != nil {
+        return err
+    }
+
+    // Remove mined transactions from mempool
+    mp.RemoveTransactions(txns)
+    return nil
 }
 
