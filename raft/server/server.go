@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,22 +36,129 @@ type RaftServer struct {
 	mu sync.RWMutex
 
 	address        string
-	serverId       string
-	peers          *raft.Set[string]
+	peers          map[string]uint64 // map of peer addresses and their previous log index
 	currentState   state
 	lastHeartbeat  time.Time
-	timeout        time.Duration
 	leadersAddress string
-	currentVote    raft.Vote
-	logEntries     *raft.Stack[raft.Log]
+	commitIndex    uint64
+	currentTerm    uint64
+	votedFor       string
+	logEntries     Stack
+}
+
+func NewRaftServer(address string) *RaftServer {
+	dir := filepath.Join(raft.ProjectDir, address)
+	err := os.MkdirAll(dir, 0700)
+	if err != nil {
+		log.Fatalf("error creating raft server's working dir; %v\n", err)
+	}
+
+	voters_file := filepath.Join(raft.ProjectDir, address, "raft.votes")
+	current_vote := readVotersFile(voters_file)
+	log.Printf("term=%v; votedFor=%v\n", current_vote.Term, current_vote.VotedFor)
+
+	log_file := filepath.Join(raft.ProjectDir, address, "raft.logs")
+	log_entries, err := NewLogEntries(log_file)
+	if err != nil {
+		log.Fatalf("error creating new log entries; %v\n", err)
+	}
+
+	return &RaftServer{
+		mu: sync.RWMutex{},
+
+		address:       address,
+		currentState:  follower,
+		lastHeartbeat: time.Now(),
+		peers:         map[string]uint64{},
+		logEntries:    log_entries,
+		currentTerm:   current_vote.Term,
+		votedFor:      current_vote.VotedFor,
+	}
+}
+
+func (s *RaftServer) NewRequest(request *raft.Request, reply *raft.Reply) error {
+	s.mu.RLock()
+	current_state := s.currentState
+	current_term := s.currentTerm
+	leaders_address := s.leadersAddress
+	s.mu.RUnlock()
+
+	if strings.TrimSpace(leaders_address) == "" {
+		return fmt.Errorf("leader NOT found")
+	}
+
+	if current_state != leader {
+		return s.redirectToLeader(request, reply)
+	}
+
+	log.Println("received new client request")
+	new_log := newLog(request.Msg, current_term)
+	peers := s.getPeers()
+
+	updated_majority := sendAppendEntries(peers, &new_log)
+	if !updated_majority {
+		*reply = raft.Reply{
+			Success: false,
+			Result:  "failed to replicate log entry in majority of peers on network",
+		}
+		return nil
+	}
+
+	log.Println("log entry replicated in majority of peers on network")
+
+	// Commit new log entry; make permanent
+	s.mu.Lock()
+	s.logEntries.Push(new_log)
+	err := s.logEntries.Commit()
+	s.mu.Unlock()
+
+	if err != nil {
+		*reply = raft.Reply{
+			Success: false,
+			Result:  fmt.Sprintf("error committing msg %#v", request.Msg),
+		}
+		return nil
+	}
+
+	*reply = raft.Reply{
+		Success: true,
+		Result:  fmt.Sprintf("msg %#v committed successfully", request.Msg),
+	}
+	return nil
+}
+
+func (s *RaftServer) JoinNetwork(request *raft.JoinRequest, reply *raft.JoinReply) error {
+	if strings.TrimSpace(request.Address) == "" {
+		return fmt.Errorf("empty server address in join request")
+	}
+
+	if request.Address == s.address {
+		return fmt.Errorf("hey wait a minute! i'm using this address")
+	}
+
+	peers := s.getPeers()
+	if len(peers) == 0 {
+		new_peers_chan <- request.Address
+	}
+
+	s.mu.Lock()
+	s.peers[request.Address] = request.PrevLogIndex
+	s.mu.Unlock()
+	log.Printf("%v joined network\n", request.Address)
+
+	*reply = raft.JoinReply{
+		RaftServers: peers,
+	}
+	return nil
 }
 
 func (s *RaftServer) RequestVote(request *raft.VoteRequest, reply *raft.VoteReply) error {
-	log.Printf("candidate %v requesting for vote 🗳️ on term %v\n", request.CandidateId, request.CandidatesTerm)
+	log.Printf("candidate %v requesting for vote 🗳️ on term %v\n", request.CandidateAddress, request.CandidatesTerm)
 
 	s.mu.RLock()
-	current_term := s.currentVote.Term
-	voted_for := s.currentVote.VotedFor
+	current_term := s.currentTerm
+	voted_for := s.votedFor
+	my_prev_log, _ := s.logEntries.Peek()
 	s.mu.RUnlock()
 
 	on_same_term := request.CandidatesTerm == current_term
@@ -63,24 +170,28 @@ func (s *RaftServer) RequestVote(request *raft.VoteRequest, reply *raft.VoteRepl
 	}
 
 	if request.CandidatesTerm < current_term {
-		log.Printf("vote denied for %v\n", request.CandidateId)
+		log.Printf("vote denied for %v\n", request.CandidateAddress)
 		*reply = vote_denied
 		return nil
 	}
 
 	if on_same_term && already_voted {
-		log.Printf("vote denied for %v\n", request.CandidateId)
+		log.Printf("vote denied for %v\n", request.CandidateAddress)
 		*reply = vote_denied
 		return nil
 	}
 
-	// TODO: check if candidates log is at least up-to-date as receiver's log
-
-	new_vote := raft.Vote{
-		Term:     request.CandidatesTerm,
-		VotedFor: request.CandidateId,
+	// If candidates log is NOT as upto date as the voters log, decline vote
+	if my_prev_log.Index > request.LastLog.Index || my_prev_log.Term > request.LastLog.Term {
+		*reply = vote_denied
+		return nil
 	}
-	err := s.saveVote(new_vote)
+
+	vote := raft.Vote{
+		Term:     request.CandidatesTerm,
+		VotedFor: request.CandidateAddress,
+	}
+	err := s.castVote(vote)
 	if err != nil {
 		return fmt.Errorf("error saving new vote to file; %v", err)
 	}
@@ -88,7 +199,6 @@ func (s *RaftServer) RequestVote(request *raft.VoteRequest, reply *raft.VoteRepl
 	s.mu.Lock()
 	s.lastHeartbeat = time.Now()
 	s.currentState = follower
-	s.timeout = getTimeout(follower)
 	s.mu.Unlock()
 
 	vote_granted := raft.VoteReply{
@@ -97,131 +207,109 @@ func (s *RaftServer) RequestVote(request *raft.VoteRequest, reply *raft.VoteRepl
 	}
 	*reply = vote_granted
 
-	log.Printf("term: %v; votedFor: %v\n", request.CandidatesTerm, request.CandidateId)
+	log.Printf("term=%v; votedFor=%v\n", request.CandidatesTerm, request.CandidateAddress)
 	return nil
 }
 
 func (s *RaftServer) AppendEntries(request *raft.AppendEntriesRequest, reply *raft.AppendEntriesReply) error {
-	log.Println("got appendEntries from leader")
-
 	s.mu.Lock()
-	s.lastHeartbeat = time.Now()
-	s.leadersAddress = request.LeadersAddress
-	current_term := s.currentVote.Term
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 
-	if request.LeadersTerm < current_term {
+	s.leadersAddress = request.LeadersAddress
+
+	// If leader has higher term, we update current term to that of the leader
+	if request.LeadersTerm > s.currentTerm {
+		s.currentTerm = request.LeadersTerm
+		s.votedFor = ""
+		s.currentState = follower
+	}
+
+	// Reject RPC if the leader's term is less than the follower's current term
+	if request.LeadersTerm < s.currentTerm {
+		log.Printf("AppendEntry RPC rejected; leader on lower term=%v than follower=%v\n", request.LeadersTerm, s.currentTerm)
 		*reply = raft.AppendEntriesReply{
-			Term:    current_term,
+			Term:    s.currentTerm,
 			Success: false,
 		}
 		return nil
 	}
 
-	// TODO: Save log entries to disk
+	// A valid RPC from a leader means we reset the election timer
+	s.lastHeartbeat = time.Now()
 
+	// This is just a heartbeat RPC
+	if len(request.Entries) == 0 {
+		fmt.Printf("x")
+		prev_log, _ := s.logEntries.Peek()
+		*reply = raft.AppendEntriesReply{
+			Term:         s.currentTerm,
+			Success:      true,
+			PrevLogIndex: prev_log.Index,
+		}
+		return nil
+	}
+
+	// We reject RPC if our log doesn't contain an entry at PrevLogIndex with PrevLogTerm
+	found := s.logEntries.EntryExists(request.PrevLogIndex)
+	if !found {
+		log.Printf("follower failed to find prevLogIndex=%v\n", request.PrevLogIndex)
+		prev_log, _ := s.logEntries.Peek()
+		*reply = raft.AppendEntriesReply{
+			Term:         s.currentTerm,
+			Success:      false,
+			PrevLogIndex: prev_log.Index,
+		}
+		return nil
+	}
+
+	entries := request.Entries
+	sort.Slice(entries, func(i int, j int) bool {
+		return entries[i].Index < entries[j].Index
+	})
+
+	// Truncate the logs after prev_log, and append with leaders logs
+	s.logEntries.Truncate(request.PrevLogIndex)
+	s.logEntries.Push(entries...)
+	s.logEntries.Commit()
+
+	// If the leader's commitIndex is higher than ours, update our commitIndex to
+	// match leaders
+	if request.LeadersCommitIndex > s.commitIndex {
+		s.commitIndex = request.LeadersCommitIndex
+	}
+
+	prev_log, _ := s.logEntries.Peek()
 	*reply = raft.AppendEntriesReply{
-		Term:    current_term,
-		Success: true,
+		Term:         s.currentTerm,
+		Success:      true,
+		PrevLogIndex: prev_log.Index,
 	}
 	return nil
 }
 
-func (s *RaftServer) JoinNetwork(request *raft.JoinRequest, reply *raft.JoinReply) error {
-	if strings.TrimSpace(request.Address) == "" {
-		return fmt.Errorf("empty server address in join request")
-	}
-
-	log.Printf("%v joined network\n", request.Address)
-
+func (s *RaftServer) getPeers() []string {
 	s.mu.RLock()
-	peers := s.peers.GetItems()
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
-	if request.Address == s.address {
-		// sender and receiver sharing the same address??
-		return fmt.Errorf("invalid address in join request")
+	peers := []string{}
+	for peer := range s.peers {
+		peers = append(peers, peer)
 	}
-
-	if len(peers) == 0 {
-		go func() {
-			broadcast <- request.Address
-		}()
-	}
-
-	s.mu.Lock()
-	s.peers.Add(request.Address)
-	s.mu.Unlock()
-
-	*reply = raft.JoinReply{
-		RaftServers: peers,
-	}
-	return nil
+	return peers
 }
 
-func (s *RaftServer) NewRequest(request *raft.Request, reply *raft.Reply) error {
+func (s *RaftServer) resetPeersLastLog() {
 	s.mu.RLock()
-	current_state := s.currentState
-	current_term := s.currentVote.Term
-	peers := s.peers.GetItems()
+	peers := s.getPeers()
+	prev_log, _ := s.logEntries.Peek()
 	s.mu.RUnlock()
 
-	if current_state != leader {
-		return s.redirectToLeader(request, reply)
-	}
-
-	log.Println("received new client request")
-
-	s.mu.RLock()
-	prev_log, err := s.logEntries.Peek()
-	s.mu.RUnlock()
-
-	if err != nil {
-		return fmt.Errorf("error acquiring previous log; %v", err)
-	}
-
-	new_log := raft.Log{
-		Msg:  request.Msg,
-		Term: current_term,
-	}
 	s.mu.Lock()
-	err = s.logEntries.Push(new_log, true)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 
-	if err != nil {
-		return fmt.Errorf("error appending log entry; %v", err)
+	for _, peer := range peers {
+		s.peers[peer] = prev_log.Index
 	}
-
-	append_entries_request := raft.AppendEntriesRequest{
-		LeadersTerm:    current_term,
-		LeadersAddress: s.address,
-		PrevLog:        prev_log,
-		Entries:        []raft.Log{new_log},
-		// TODO:
-	}
-
-	n_updated, err := sendAppendEntries(&append_entries_request, peers)
-	if err != nil {
-		return fmt.Errorf("error sending append entries; %v", err)
-	}
-
-	half_peers := len(peers) / 2
-	updated_majority := n_updated > half_peers
-
-	if !updated_majority {
-		return fmt.Errorf("error updating majority of peers on network")
-	}
-
-	log.Println("log entry replicated in majority of peers on network")
-
-	// TODO: commit the log entry; make permanent
-	// TODO: apply commited entry to system state and notify client
-
-	*reply = raft.Reply{
-		Success: true,
-		Result:  fmt.Sprintf("Msg %v executed successfully", request.Msg),
-	}
-	return nil
 }
 
 // If we receive a request and we are not the leader, we
@@ -242,9 +330,8 @@ func (s *RaftServer) redirectToLeader(request *raft.Request, reply *raft.Reply) 
 	return client.Call("RaftServer.NewRequest", request, reply)
 }
 
-func (s *RaftServer) saveVote(vote raft.Vote) error {
-	voters_file := filepath.Join(raft.ProjectDir, s.serverId, "raft.votes")
-
+func (s *RaftServer) castVote(vote raft.Vote) error {
+	voters_file := filepath.Join(raft.ProjectDir, s.address, "raft.votes")
 	file, err := os.OpenFile(voters_file, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0700)
 	if err != nil {
 		return err
@@ -258,7 +345,8 @@ func (s *RaftServer) saveVote(vote raft.Vote) error {
 	}
 
 	s.mu.Lock()
-	s.currentVote = vote
+	s.currentTerm = vote.Term
+	s.votedFor = vote.VotedFor
 	s.mu.Unlock()
 
 	return nil
@@ -266,14 +354,14 @@ func (s *RaftServer) saveVote(vote raft.Vote) error {
 
 func (s *RaftServer) incrementTerm() (*raft.Vote, error) {
 	s.mu.RLock()
-	current_term := s.currentVote.Term
+	current_term := s.currentTerm
 	s.mu.RUnlock()
 
 	new_vote := raft.Vote{
 		Term:     current_term + 1,
 		VotedFor: "",
 	}
-	err := s.saveVote(new_vote)
+	err := s.castVote(new_vote)
 	if err != nil {
 		return nil, err
 	}
@@ -281,43 +369,8 @@ func (s *RaftServer) incrementTerm() (*raft.Vote, error) {
 	return &new_vote, nil
 }
 
-func NewRaftServer(address string) *RaftServer {
-	server_id := fmt.Sprintf("%x", sha1.Sum([]byte(address)))
-
-	// create raft server's working dir
-	dir := filepath.Join(raft.ProjectDir, server_id)
-	err := os.MkdirAll(dir, 0700)
-	if err != nil {
-		log.Fatalf("error creating raft server's working dir; %v\n", err)
-	}
-
-	voters_file := filepath.Join(raft.ProjectDir, server_id, "raft.votes")
-	current_vote := readVotersFile(voters_file)
-	log.Printf("term: %v\n", current_vote.Term)
-
-	log_file := filepath.Join(raft.ProjectDir, server_id, "log.entries")
-	log_entries, err := newLogEntries(log_file)
-	if err != nil {
-		log.Fatalf("error creating new log entries; %v\n", err)
-	}
-
-	return &RaftServer{
-		mu: sync.RWMutex{},
-
-		address:        address,
-		serverId:       server_id,
-		currentState:   follower,
-		lastHeartbeat:  time.Now(),
-		timeout:        getTimeout(follower),
-		leadersAddress: "", // leaders address is not usually initially known
-		peers:          raft.NewSet[string](),
-		currentVote:    current_vote,
-		logEntries:     log_entries,
-	}
-}
-
-func readVotersFile(fname string) raft.Vote {
-	file, err := os.OpenFile(fname, os.O_CREATE|os.O_RDWR, 0700)
+func readVotersFile(path string) raft.Vote {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0700)
 	if err != nil {
 		log.Fatalf("error reading voters file; %v\n", err)
 	}
@@ -326,21 +379,20 @@ func readVotersFile(fname string) raft.Vote {
 	prev_vote := raft.Vote{}
 	decoder := json.NewDecoder(file)
 	err = decoder.Decode(&prev_vote)
-	if err != nil && errors.Is(err, io.EOF) {
+	if err != nil {
 		// file empty
-
-		encoder := json.NewEncoder(file)
-		err = encoder.Encode(prev_vote)
-		if err != nil {
+		if errors.Is(err, io.EOF) {
+			encoder := json.NewEncoder(file)
+			err = encoder.Encode(prev_vote)
+			if err != nil {
+				log.Fatalf("error reading voters file; %v\n", err)
+			}
+		} else {
 			log.Fatalf("error reading voters file; %v\n", err)
 		}
 	}
 
 	return prev_vote
-}
-
-func newLogEntries(fpath string) (*raft.Stack[raft.Log], error) {
-	return raft.NewStack[raft.Log](1000, fpath)
 }
 
 func getTimeout(current_state state) time.Duration {
@@ -358,6 +410,13 @@ func getTimeout(current_state state) time.Duration {
 	variation := time.Duration(rand_int) * time.Second
 	timeout := BASE_TIMEOUT + variation
 
-	log.Printf("follower timeout set to %v\n", timeout)
+	log.Printf("%s timeout set to %v\n", current_state, timeout)
 	return timeout
+}
+
+func min(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
 }

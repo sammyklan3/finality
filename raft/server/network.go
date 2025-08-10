@@ -1,4 +1,4 @@
-package raft
+package main
 
 import (
 	"fmt"
@@ -34,14 +34,5 @@ func portAvailable(address string) bool {
 		return false
 	}
 	listener.Close()
-	return true
-}
-
-func ServiceAvailable(address string) bool {
-	conn, err := net.Dial("tcp", address)
-	if err != nil {
-		return false
-	}
-	conn.Close()
 	return true
 }

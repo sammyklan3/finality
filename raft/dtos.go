@@ -3,24 +3,24 @@ package raft
 type EmptyArgs struct{}
 
 type Vote struct {
-	Term     int    `json:"term"`
-	VotedFor string `json:"votedFor"`
+	Term     uint64 `json:"term"`
+	VotedFor string `json:"voted_for"`
 }
 
 type VoteRequest struct {
-	CandidatesTerm int    `json:"term"`
-	CandidateId    string `json:"candidateId"`
-	LastLogIndex   int    `json:"lastLogIndex"`
-	LastLogTerm    int    `json:"lastLogTerm"`
+	CandidatesTerm   uint64 `json:"term"`
+	CandidateAddress string `json:"candidate_address"`
+	LastLog          Log    `json:"last_log"`
 }
 
 type VoteReply struct {
-	Term        int  `json:"term"`
-	VoteGranted bool `json:"voteGranted"`
+	Term        uint64 `json:"term"`
+	VoteGranted bool   `json:"vote_granted"`
 }
 
 type JoinRequest struct {
-	Address string `json:"address"`
+	Address      string `json:"address"`
+	PrevLogIndex uint64 `json:"prev_log_index"`
 }
 
 type JoinReply struct {
@@ -28,21 +28,24 @@ type JoinReply struct {
 }
 
 type AppendEntriesRequest struct {
-	LeadersTerm       int    `json:"leaders_term"`
-	LeadersAddress    string `json:"leaders_address"`
-	PrevLog           Log    `json:"prev_log"`
-	Entries           []Log  `json:"entries"`
-	LeaderCommitIndex int    `json:"leader_commit_index"`
+	LeadersTerm        uint64 `json:"leaders_term"`
+	LeadersAddress     string `json:"leaders_address"`
+	LeadersCommitIndex uint64 `json:"leaders_commit_index"`
+	Entries            []Log  `json:"entries"`
+	PrevLogIndex       uint64 `json:"prev_log_index"`
 }
 
 type AppendEntriesReply struct {
-	Term    int  `json:"term"`
-	Success bool `json:"success"`
+	Term         uint64 `json:"term"`
+	Success      bool   `json:"success"`
+	PrevLogIndex uint64 `json:"prev_log_index"`
 }
 
 type Log struct {
-	Msg  string `json:"msg"`
-	Term int    `json:"term"`
+	Index     uint64 `json:"index"`
+	Msg       string `json:"msg"`
+	Term      uint64 `json:"term"`
+	Committed bool   `json:"committed"`
 }
 
 type Request struct {
