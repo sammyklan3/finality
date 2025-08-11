@@ -1,5 +1,8 @@
 package raft
 
+// This file contains all the data transfer objects used
+// for sending and receiving data b2n the raft RPC servers
+
 type EmptyArgs struct{}
 
 type Vote struct {

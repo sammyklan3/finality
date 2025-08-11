@@ -11,6 +11,10 @@ const (
 	MAX_PORT int = 8000
 )
 
+// Searches for the next available port on the host address
+// starting from MIN_PORT=1024 to MAX_PORT=8000.
+// The numbers MIN_PORT and MAX_PORT are completely arbitrary,
+// use whatever you want.
 func NewAddress(host string, port int) (string, int) {
 	address := fmt.Sprintf("%v:%v", host, port)
 	if portAvailable(address) {

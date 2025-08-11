@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/rpc"
 	"slices"
@@ -15,25 +16,33 @@ import (
 	"github.com/sammyklan3/finality/raft"
 )
 
+type state string
+
+var (
+	leader    state = "leader"
+	follower  state = "follower"
+	candidate state = "candidate"
+)
+
 var (
 	remote string
 	self   *RaftServer
 
 	// test flag
-	is_leader   bool = false
-	is_follower bool = false
+	isLeader   bool = false
+	isFollower bool = false
 
-	new_state      chan state  = make(chan state)
-	new_peers_chan chan string = make(chan string)
+	newState     chan state  = make(chan state)
+	newPeersChan chan string = make(chan string)
 )
 
 func init() {
 	flag.StringVar(&remote, "remote", "", "Address of the server to contact to join raft network")
-	flag.BoolVar(&is_leader, "leader", false, "Start off server as leader")
-	flag.BoolVar(&is_follower, "follower", false, "Start of server as follower")
+	flag.BoolVar(&isLeader, "leader", false, "Start off server as leader")
+	flag.BoolVar(&isFollower, "follower", false, "Start of server as follower")
 	flag.Parse()
 
-	if is_leader && is_follower {
+	if isLeader && isFollower {
 		log.Fatalln("illogical argument; leaders can NOT also be followers")
 	}
 
@@ -68,74 +77,53 @@ func launchRPCService() {
 	}
 }
 
-func joinNetwork() ([]string, error) {
-	if strings.TrimSpace(remote) == "" {
-		return nil, fmt.Errorf("no remote provided")
+func joinNetwork(address string) error {
+	if strings.TrimSpace(address) == "" {
+		return fmt.Errorf("empty peer address")
 	}
 
-	client, err := rpc.Dial("tcp", remote)
+	client, err := rpc.Dial("tcp", address)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer client.Close()
 
+	self.mu.RLock()
+	prevLog, _ := self.logEntries.Peek()
+	self.mu.RUnlock()
+
 	request := raft.JoinRequest{
-		Address: self.address,
+		Address:      self.address,
+		PrevLogIndex: prevLog.Index,
 	}
 	reply := raft.JoinReply{}
 
-	log.Println("joining raft network")
+	log.Printf("sending JoinNetwork request to %v\n", address)
 	err = client.Call("RaftServer.JoinNetwork", &request, &reply)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	peers := reply.RaftServers
 	peers = slices.DeleteFunc(peers, func(peer string) bool {
-		return peer == self.address
+		return peer == self.address || peer == address
 	})
+	self.addPeers(peers...)
 
-	self.mu.Lock()
-	self.peers[remote] = 0
-	for _, peer := range peers {
-		self.peers[peer] = 0
-	}
-	self.mu.Unlock()
-
-	go notifyPeersOfNewServer(peers)
-
-	return peers, nil
+	return nil
 }
 
-func notifyPeersOfNewServer(peers []string) {
-	self.mu.RLock()
-	prev_log, _ := self.logEntries.Peek()
-	self.mu.RUnlock()
-
+func notifyPeersOfJoin(peers []string) {
 	wg := sync.WaitGroup{}
 	wg.Add(len(peers))
 
 	for _, peer := range peers {
-		go func(peer string) {
+		go func(address string) {
 			defer wg.Done()
 
-			log.Printf("notifying %v i joined the network\n", peer)
-			client, err := rpc.Dial("tcp", peer)
+			err := joinNetwork(address)
 			if err != nil {
-				log.Printf("error dialing peer; %v\n", err)
-				return
-			}
-			defer client.Close()
-
-			request := raft.JoinRequest{
-				Address:      self.address,
-				PrevLogIndex: prev_log.Index,
-			}
-			reply := raft.JoinReply{}
-			err = client.Call("RaftServer.JoinNetwork", &request, &reply)
-			if err != nil {
-				log.Printf("error calling RaftServer.JoinNetwork RPC func; %v\n", err)
-				return
+				log.Printf("error joining network through %v; %v\n", address, err)
 			}
 		}(peer)
 	}
@@ -143,8 +131,8 @@ func notifyPeersOfNewServer(peers []string) {
 	wg.Wait()
 }
 
-func requestVote(request raft.VoteRequest, address string, result_chan chan<- raft.VoteReply) {
-	log.Printf("requesting %v for their vote 🗳️ on term %v\n", address, request.CandidatesTerm)
+func requestVote(request raft.VoteRequest, address string, resultChan chan<- raft.VoteReply) {
+	log.Printf("requesting %v for their vote 🗳️, term=%v\n", address, request.CandidatesTerm)
 
 	client, err := rpc.Dial("tcp", address)
 	if err != nil {
@@ -153,129 +141,131 @@ func requestVote(request raft.VoteRequest, address string, result_chan chan<- ra
 	}
 	defer client.Close()
 
-	vote_reply := raft.VoteReply{}
-	err = client.Call("RaftServer.RequestVote", &request, &vote_reply)
+	voteReply := raft.VoteReply{}
+	err = client.Call("RaftServer.RequestVote", &request, &voteReply)
 	if err != nil {
 		log.Printf("error requesting vote; %v\n", err)
 		return
 	}
 
-	vote_granted := vote_reply.VoteGranted
-	if vote_granted {
-		log.Printf("%v granted you their voted\n", address)
+	voteGranted := voteReply.VoteGranted
+	if voteGranted {
+		log.Printf("%v granted you their vote\n", address)
 	} else {
-		log.Printf("%v denied you their voted\n", address)
+		log.Printf("%v denied you their vote\n", address)
 	}
 
-	result_chan <- vote_reply
+	resultChan <- voteReply
 }
 
 func requestVotes(peers []string) (bool, error) {
-	if is_follower {
-		new_state <- follower
+	if isFollower {
+		newState <- follower
 		return false, nil
 	}
 
 	if len(peers) == 0 {
 		log.Println("requestVotes; waiting for peers to join network...")
-		_ = <-new_peers_chan
+		_ = <-newPeersChan
 	}
 
-	// increment current term
-	current_vote, err := self.incrementTerm()
+	currentVote, err := self.incrementTerm()
 	if err != nil {
 		return false, fmt.Errorf("error incrementing current term; %v", err)
 	}
 
-	log.Printf("requesting votes for term %v\n", current_vote.Term)
+	log.Printf("requesting votes for term %v\n", currentVote.Term)
 
-	// change to candidate state
 	self.mu.Lock()
 	self.currentState = candidate
-	my_prev_log, _ := self.logEntries.Peek()
+	myPrevLog, _ := self.logEntries.Peek()
 	self.mu.Unlock()
 
-	// vote for self
-	my_vote := raft.Vote{
-		Term:     current_vote.Term,
+	// Vote for self
+	myVote := raft.Vote{
+		Term:     currentVote.Term,
 		VotedFor: self.address,
 	}
-	err = self.castVote(my_vote)
+	err = self.castVote(myVote)
 	if err != nil {
 		return false, fmt.Errorf("error voting for self; %v", err)
 	}
 
-	vote_request := raft.VoteRequest{
-		CandidatesTerm:   current_vote.Term,
+	voteRequest := raft.VoteRequest{
+		CandidatesTerm:   currentVote.Term,
 		CandidateAddress: self.address,
-		LastLog:          my_prev_log,
+		LastLog:          myPrevLog,
 	}
 
-	// send requestVote RPCs to all peer servers
-	votes_chan := make(chan raft.VoteReply, len(peers))
+	votesChan := make(chan raft.VoteReply, len(peers))
 	for _, peer := range peers {
-		go requestVote(vote_request, peer, votes_chan)
+		go requestVote(voteRequest, peer, votesChan)
 	}
 
-	// we also count our own vote
-	votes_granted := 1
-	half_peers := len(peers) / 2
+	// We also count our own vote
+	votesGranted := 1
+	halfPeers := len(peers) / 2
 
 	hasMajority := func() bool {
-		if len(peers) < 2 {
-			return votes_granted == 2
+		// If there is only one other node connected to the network,
+		// majority equals;
+		// my vote + other guy's = 2 votes
+		if len(peers) == 1 {
+			return votesGranted == 2
 		}
-		return votes_granted > half_peers
+		return votesGranted > halfPeers
 	}
 
 	for {
 		select {
-		case vote_reply := <-votes_chan:
-			// if voter has greater term, candidate MUST step down
-			if vote_reply.Term > current_vote.Term {
-				new_state <- follower
+		case voteReply := <-votesChan:
+			// If voter has greater term, candidate MUST step down
+			if voteReply.Term > currentVote.Term {
+				newState <- follower
 				return false, nil
 			}
 
-			if !vote_reply.VoteGranted {
+			if !voteReply.VoteGranted {
 				continue
 			}
 
-			votes_granted++
+			votesGranted++
 			if hasMajority() {
 				return true, nil
 			}
 
+		// We don't have to wait for all the votes to come back;
+		// timeout after n seconds and collect the results
 		case <-time.After(5 * time.Second):
 			return hasMajority(), nil
 		}
 	}
 }
 
-func sendAppendEntry(peer string, new_log *raft.Log, results chan<- bool) {
+func sendAppendEntry(peer string, newLog *raft.Log, results chan<- bool) {
 	self.mu.RLock()
-	current_term := self.currentTerm
-	commit_index := self.commitIndex
+	currentTerm := self.currentTerm
+	commitIndex := self.commitIndex
 
-	followers_prev_log_index, _ := self.peers[peer]
-	my_prev_log, _ := self.logEntries.Peek()
+	followersLogIndex, _ := self.peers[peer]
+	myPrevLog, _ := self.logEntries.Peek()
 
-	raft_logs := []raft.Log{}
-	if followers_prev_log_index < my_prev_log.Index {
-		raft_logs = self.logEntries.GetTopOf(followers_prev_log_index, commit_index)
+	missedEntries := []raft.Log{}
+	if followersLogIndex < myPrevLog.Index {
+		missedEntries = self.logEntries.GetTopOf(followersLogIndex, commitIndex)
 	}
 	self.mu.RUnlock()
 
-	if new_log != nil {
-		raft_logs = append(raft_logs, *new_log)
+	if newLog != nil {
+		missedEntries = append(missedEntries, *newLog)
 	}
 
 	request := raft.AppendEntriesRequest{
-		LeadersTerm:        current_term,
+		LeadersTerm:        currentTerm,
 		LeadersAddress:     self.address,
-		LeadersCommitIndex: commit_index,
-		Entries:            raft_logs,
-		PrevLogIndex:       followers_prev_log_index,
+		LeadersCommitIndex: commitIndex,
+		Entries:            missedEntries,
+		PrevLogIndex:       followersLogIndex,
 	}
 
 	client, err := rpc.Dial("tcp", peer)
@@ -294,8 +284,8 @@ func sendAppendEntry(peer string, new_log *raft.Log, results chan<- bool) {
 
 	// if peer has higher term than us, we step down
 	// from leader
-	if reply.Term > current_term {
-		new_state <- follower
+	if reply.Term > currentTerm {
+		newState <- follower
 		return
 	}
 
@@ -306,54 +296,89 @@ func sendAppendEntry(peer string, new_log *raft.Log, results chan<- bool) {
 	results <- reply.Success
 }
 
-// Sends AppendEntry RPCs to peers
-func sendAppendEntries(peers []string, new_log *raft.Log) (updated_majority bool) {
+//	When a leader receives a request from a client, it first replicates
+//	the request across several nodes on the network by sending AppendEntry RPCs.
+//
+// This function sends AppendEntry RPCs to peers.
+func sendAppendEntries(peers []string, newLog *raft.Log) (updatedMajority bool) {
 	defer func() {
-		if updated_majority && new_log != nil {
+		if updatedMajority && newLog != nil {
 			self.mu.Lock()
-			self.commitIndex = new_log.Index
+			self.commitIndex = newLog.Index
 			self.mu.Unlock()
 		}
 	}()
 
 	if len(peers) == 0 {
 		log.Println("sendAppendEntries; waiting for peers to join network...")
-		_ = <-new_peers_chan
+		_ = <-newPeersChan
 	}
 
+	// The dot indicates leader sending AppendEntry RPCs to its
+	// followers
 	fmt.Printf(".")
-	results_chan := make(chan bool, len(peers))
+	resultsChan := make(chan bool, len(peers))
 	for _, peer := range peers {
-		go sendAppendEntry(peer, new_log, results_chan)
+		go sendAppendEntry(peer, newLog, resultsChan)
 	}
 
-	// we also count ourselves
-	peers_updated := 1
-	half_peers := len(peers) / 2
+	// We also count ourselves
+	peersUpdated := 1
+	halfPeers := len(peers) / 2
 
-	updatedMajority := func() bool {
-		if len(peers) < 2 {
-			return peers_updated == 2
+	hasMajority := func() bool {
+		// If there is only one other node connected to the network,
+		// majority equals;
+		// me + other guy = 2 AppendEntry replies
+		if len(peers) == 1 {
+			return peersUpdated == 2
 		}
-		return peers_updated > half_peers
+		return peersUpdated > halfPeers
 	}
 
 	for {
 		select {
-		case ok := <-results_chan:
+		case ok := <-resultsChan:
 			if !ok {
 				continue
 			}
 
-			peers_updated++
-			if updatedMajority() {
+			peersUpdated++
+			if hasMajority() {
 				return true
 			}
 
+		// We don't have to wait for everyone to respond;
+		// timeout after n seconds and collect the results
 		case <-time.After(5 * time.Second):
-			return updatedMajority()
+			return hasMajority()
 		}
 	}
+}
+
+func getTimeout(currentState state) time.Duration {
+	var (
+		BASE_TIMEOUT   time.Duration = 20 * time.Second
+		LEADER_TIMEOUT time.Duration = 10 * time.Second
+
+		timeout time.Duration = BASE_TIMEOUT
+	)
+
+	switch currentState {
+	case leader:
+		timeout = LEADER_TIMEOUT
+	default:
+		// Randomized timeout variations prevent more than one
+		// follower requesting for votes at around the same time.
+		// 1 + randN avoids zero variation value.
+
+		randInt := 1 + rand.IntN(5)
+		variation := time.Duration(randInt) * time.Second
+		timeout = BASE_TIMEOUT + variation
+	}
+
+	log.Printf("%s timeout set to %v\n", currentState, timeout)
+	return timeout
 }
 
 func startLeader(ctx context.Context) {
@@ -379,6 +404,8 @@ func startLeader(ctx context.Context) {
 			return
 
 		case <-ticker.C:
+			// It is the duty of a leader to periodically send
+			// AppendEntry RPCs inorder to maintain its reign
 			peers := self.getPeers()
 			sendAppendEntries(peers, nil)
 		}
@@ -397,13 +424,16 @@ func startFollower(ctx context.Context) {
 
 		case <-ticker.C:
 			self.mu.RLock()
-			last_heartbeat := self.lastHeartbeat
+			lastHeartbeat := self.lastHeartbeat
 			self.mu.RUnlock()
 
-			leader_dead := time.Since(last_heartbeat) > timeout
-			if leader_dead {
+			// A follower listens to AppendEntry RPCs from the leader
+			// up until the leader no longer responds and is considered 'dead'.
+			// Once a leader 'dies', the follower steps up to become a candidate
+			kingsDead := time.Since(lastHeartbeat) > timeout
+			if kingsDead {
 				log.Println("leader is dead")
-				new_state <- candidate
+				newState <- candidate
 			}
 		}
 	}
@@ -412,27 +442,32 @@ func startFollower(ctx context.Context) {
 func startCandidate() {
 	log.Println("becoming candidate")
 
+	// A candidate requests votes from its peers inorder to become
+	// the leader
 	peers := self.getPeers()
-	won_election, err := requestVotes(peers)
+	wonElection, err := requestVotes(peers)
 	if err != nil {
 		log.Printf("error requesting votes; %v\n", err)
 		return
 	}
 
-	if won_election {
-		new_state <- leader
+	if wonElection {
+		newState <- leader
 	} else {
 		log.Println("election lost; stepping down from candidate")
-		new_state <- follower
+		newState <- follower
 	}
 }
 
 func main() {
 	go launchRPCService()
 
-	_, err := joinNetwork()
+	err := joinNetwork(remote)
 	if err != nil {
-		log.Printf("error joining raft network; %v\n", err)
+		log.Printf("error joining network through remote=%v; %v\n", remote, err)
+	} else {
+		peers := self.getPeers()
+		go notifyPeersOfJoin(peers)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -441,14 +476,14 @@ func main() {
 		time.Sleep(1 * time.Second)
 
 		// Start server as follower
-		new_state <- follower
+		newState <- follower
 	}()
 
 	for {
-		new_state := <-new_state
+		currentState := <-newState
 
 		self.mu.Lock()
-		self.currentState = new_state
+		self.currentState = currentState
 		self.mu.Unlock()
 
 		// Cancel old context and get a new one.
@@ -460,10 +495,10 @@ func main() {
 		peers := self.getPeers()
 		if len(peers) == 0 {
 			log.Println("waiting for peers to join network...")
-			<-new_peers_chan
+			<-newPeersChan
 		}
 
-		switch new_state {
+		switch currentState {
 		case leader:
 			go startLeader(ctx)
 		case follower:

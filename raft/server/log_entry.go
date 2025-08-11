@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	log_index atomic.Uint64
+	logIndex atomic.Uint64
 
 	ErrStackEmpty error = errors.New("stack empty")
 	ErrStackFull  error = errors.New("stack full")
@@ -28,7 +28,7 @@ type Stack struct {
 }
 
 func NewLogEntries(path string) (Stack, error) {
-	raft_logs := readLogsFromFile(path)
+	raftLogs := readLogsFromFile(path)
 	stack := Stack{
 		items: []raft.Log{},
 		keys:  make(map[uint64]any),
@@ -37,19 +37,19 @@ func NewLogEntries(path string) (Stack, error) {
 		path:  path,
 	}
 
-	err := stack.Push(raft_logs...)
+	err := stack.Push(raftLogs...)
 	if err != nil {
 		return stack, err
 	}
 
 	// Create initial log entry if stack is empty
 	if stack.isEmpty() {
-		new_log := newLog("INIT", 0)
-		stack.Push(new_log)
+		raftLog := NewLog("INIT", 0)
+		stack.Push(raftLog)
 		stack.Commit()
 	} else {
-		prev_log, _ := stack.Peek()
-		log_index.Store(prev_log.Index + 1)
+		prevLog, _ := stack.Peek()
+		logIndex.Store(prevLog.Index + 1)
 	}
 	return stack, err
 }
@@ -106,7 +106,7 @@ func (stack *Stack) Truncate(index uint64) error {
 		return ErrNotFound
 	}
 
-	num_deleted_items := 0
+	numDeletedItems := 0
 	for {
 		item, err := stack.Peek()
 		if err != nil {
@@ -120,10 +120,10 @@ func (stack *Stack) Truncate(index uint64) error {
 		if err != nil {
 			return err
 		}
-		num_deleted_items++
+		numDeletedItems++
 	}
 
-	if num_deleted_items == 0 {
+	if numDeletedItems == 0 {
 		return nil
 	}
 
@@ -131,18 +131,18 @@ func (stack *Stack) Truncate(index uint64) error {
 	return writeLogsToFile(stack.path, items...)
 }
 
-func (stack Stack) GetTopOf(bottom_index, top_index uint64) []raft.Log {
+func (stack Stack) GetTopOf(bottomIndex, topIndex uint64) []raft.Log {
 	items := []raft.Log{}
-	start_collecting := false
+	startCollecting := false
 
-	// Check if bottom_index item exists
-	if _, ok := stack.keys[bottom_index]; !ok {
+	// Check if bottomIndex item exists
+	if _, ok := stack.keys[bottomIndex]; !ok {
 		return nil
 	}
 
-	// Check if top_index item exists
-	if top_index != 0 {
-		_, ok := stack.keys[top_index]
+	// Check if topIndex item exists
+	if topIndex != 0 {
+		_, ok := stack.keys[topIndex]
 		if !ok {
 			return nil
 		}
@@ -154,15 +154,15 @@ func (stack Stack) GetTopOf(bottom_index, top_index uint64) []raft.Log {
 			return items
 		}
 
-		if item.Index == top_index || top_index == 0 {
-			start_collecting = true
+		if item.Index == topIndex || topIndex == 0 {
+			startCollecting = true
 		}
 
-		if item.Index == bottom_index {
+		if item.Index == bottomIndex {
 			break
 		}
 
-		if start_collecting {
+		if startCollecting {
 			items = append(items, item)
 		}
 	}
@@ -192,24 +192,24 @@ func readLogsFromFile(path string) []raft.Log {
 	}
 	defer file.Close()
 
-	raft_logs := []raft.Log{}
-	raft_log := raft.Log{}
+	raftLogs := []raft.Log{}
+	raftLog := raft.Log{}
 	decoder := json.NewDecoder(file)
 
 	for {
-		err := decoder.Decode(&raft_log)
+		err := decoder.Decode(&raftLog)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil
 		}
-		raft_logs = append(raft_logs, raft_log)
+		raftLogs = append(raftLogs, raftLog)
 	}
-	return raft_logs
+	return raftLogs
 }
 
-func writeLogsToFile(path string, raft_logs ...raft.Log) error {
+func writeLogsToFile(path string, raftLogs ...raft.Log) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
 	if err != nil {
 		return err
@@ -218,10 +218,10 @@ func writeLogsToFile(path string, raft_logs ...raft.Log) error {
 
 	encoder := json.NewEncoder(file)
 
-	for _, raft_log := range raft_logs {
-		raft_log.Committed = true
+	for _, raftLog := range raftLogs {
+		raftLog.Committed = true
 
-		err := encoder.Encode(raft_log)
+		err := encoder.Encode(raftLog)
 		if err != nil {
 			return err
 		}
@@ -229,12 +229,12 @@ func writeLogsToFile(path string, raft_logs ...raft.Log) error {
 	return nil
 }
 
-func newLog(msg string, term uint64) raft.Log {
-	old_index := log_index.Load()
-	log_index.Add(1)
+func NewLog(msg string, term uint64) raft.Log {
+	oldIndex := logIndex.Load()
+	logIndex.Add(1)
 
 	return raft.Log{
-		Index: old_index,
+		Index: oldIndex,
 		Msg:   msg,
 		Term:  term,
 	}

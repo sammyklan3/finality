@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -18,11 +17,16 @@ func init() {
 	}
 
 	ProjectDir = filepath.Join(homeDir, ".finality")
-	err = os.Mkdir(ProjectDir, 0755)
+	err = os.MkdirAll(ProjectDir, 0755)
 	if err != nil {
-		err_dir_exists := errors.Is(err, os.ErrExist)
-		if !err_dir_exists {
-			log.Fatalf("error creating project directory; %v\n", err)
-		}
+		log.Fatalf("error creating project directory; %v\n", err)
 	}
+}
+
+func GetVotersFile(address string) string {
+	return filepath.Join(ProjectDir, address, "raft.votes")
+}
+
+func GetLogFile(address string) string {
+	return filepath.Join(ProjectDir, address, "raft.logs")
 }
