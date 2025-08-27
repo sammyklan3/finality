@@ -9,12 +9,14 @@ import (
 
 var (
 	projectDir string
+	SecretsDir string
 )
 
 func init() {
 	_, file, _, _ := runtime.Caller(0)
 	utilsDir := filepath.Dir(file)
 	projectDir = filepath.Dir(utilsDir)
+	SecretsDir = filepath.Join(projectDir, "secrets")
 }
 
 func LoadEnv() error {

@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/sammyklan3/finality/blockchain/server/utils"
+	"github.com/sammyklan3/finality/blockchain/utils"
 )
 
 var (

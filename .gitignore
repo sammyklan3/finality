@@ -28,3 +28,4 @@ tmp/
 .env
 air.toml
 secrets/
+.vscode/

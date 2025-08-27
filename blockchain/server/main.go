@@ -14,16 +14,29 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/sammyklan3/finality/blockchain"
 	"github.com/sammyklan3/finality/blockchain/server/database"
 	"github.com/sammyklan3/finality/blockchain/server/dtos"
 )
 
 var (
+	b *blockchain.Blockchain
+
+	// Models
 	organizations *database.OrganizationsTable = database.NewOrganizationTable()
 )
+
+func init() {
+	var err error
+	b, err = blockchain.NewBlockchain("GLOBAL_BLOCKCHAIN")
+	if err != nil {
+		log.Fatalf("Error creating server blockchain; %v\n", err)
+	}
+}
 
 func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -61,8 +74,8 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 
 	req := registerRequest{
 		Organization: dtos.Organization{
-			OrgName:   r.FormValue("org_name"),
-			PublicKey: publicKeyBytes,
+			AccountName: strings.ToUpper(r.FormValue("account_name")),
+			PublicKey:   publicKeyBytes,
 		},
 	}
 
@@ -73,7 +86,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// check if organization already exists; done to avoid duplicate registrations
-	exists := organizations.Exists(req.OrgName)
+	exists := organizations.Exists(req.AccountName)
 	if exists {
 		jsonResponse(w, http.StatusConflict, map[string]string{"error": "Organization already exists"})
 		return
@@ -89,11 +102,40 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]string{"message": "Organization created successfully"})
 }
 
+func receiveBlockHandler(w http.ResponseWriter, r *http.Request) {
+	var signedBlock blockchain.SignedBlock
+
+	err := json.NewDecoder(r.Body).Decode(&signedBlock)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Invalid signedBlock structure"})
+		return
+	}
+
+	// Get signedBlock owner if exists
+	org, err := organizations.Get(signedBlock.Owner)
+	if err != nil {
+		message := fmt.Sprintf("Block owner %v does not exist", signedBlock.Owner)
+		jsonResponse(w, http.StatusNotFound, map[string]string{"error": message})
+		return
+	}
+
+	err = b.AddBlock(&signedBlock, org.PublicKey, signedBlock.Signature)
+	if err != nil {
+		message := "Error appending signedBlock to blockchain "
+		log.Println(message, err)
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": message})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"message": "Good block"})
+}
+
 func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 
 	r.Post("/auth/register", registerHandler)
+	r.Post("/blocks", receiveBlockHandler)
 
 	address := "localhost:5000"
 	log.Printf("Starting blockchain server on address %v...\n", address)
