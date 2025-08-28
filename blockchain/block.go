@@ -9,8 +9,7 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"strings"
-	"sync/atomic"
+	"sync"
 
 	"github.com/sammyklan3/finality/blockchain/server/dtos"
 	"github.com/sammyklan3/finality/blockchain/utils"
@@ -18,8 +17,7 @@ import (
 )
 
 var (
-	blockId        atomic.Uint32 = atomic.Uint32{}
-	MAX_BLOCK_SIZE int           = 10 // FIX: Set to higher number in production
+	MAX_BLOCK_SIZE int = 10 // FIX: Set to higher number in production
 
 	ErrMinAmount error = fmt.Errorf("Transaction amount cannot be less than minimum amount %v", MIN_TRANSACTION_AMOUNT)
 	ErrBlockFull error = fmt.Errorf("Block full. Please create a new block")
@@ -42,25 +40,30 @@ func init() {
 }
 
 type Block struct {
+	mu sync.RWMutex
+
 	Id            uint32              `json:"id"`
 	PrevBlockId   uint32              `json:"prev_block_id"`
-	PrevBlockHash string              `json:"prev_hash"`
+	PrevBlockHash []byte              `json:"prev_hash"`
 	Owner         string              `json:"owner"`
 	Transactions  []SignedTransaction `json:"transactions"`
 }
 
-func NewBlock(prevBlockId uint32, prevBlockHash, owner string) (*Block, error) {
+func NewBlock(prevBlockId uint32, prevBlockHash []byte, blockId uint32, owner string) (*Block, error) {
 	if err := dtos.ValidateName(owner); err != nil {
 		return nil, err
 	}
 
-	return &Block{
-		Id:            blockId.Add(1),
+	b := Block{
+		mu: sync.RWMutex{},
+
+		Id:            blockId,
 		PrevBlockId:   prevBlockId,
 		PrevBlockHash: prevBlockHash,
 		Owner:         owner,
 		Transactions:  []SignedTransaction{},
-	}, nil
+	}
+	return &b, nil
 }
 
 func (b *Block) AddTransaction(t Transaction, privateKey ecdsa.PrivateKey) error {
@@ -80,14 +83,14 @@ func (b *Block) AddTransaction(t Transaction, privateKey ecdsa.PrivateKey) error
 		Signature:   signature,
 	}
 
-	mu.Lock()
+	b.mu.Lock()
 	b.Transactions = append(b.Transactions, signedTransaction)
-	mu.Unlock()
+	b.mu.Unlock()
 
 	return nil
 }
 
-func (b *Block) Hash() ([]byte, error) {
+func (b *Block) hashBlock() ([]byte, error) {
 	blockBytes, err := json.Marshal(b)
 	if err != nil {
 		return nil, err
@@ -97,26 +100,26 @@ func (b *Block) Hash() ([]byte, error) {
 	return hash[:], nil
 }
 
-func (b *Block) SignBlock(privateKey *ecdsa.PrivateKey) ([]byte, error) {
+// Signs a Block using the provided privateKey
+// Returns a hash of the block, signature and an error (if one occurred)
+func (b *Block) signBlock(privateKey *ecdsa.PrivateKey) ([]byte, []byte, error) {
 	if privateKey == nil {
-		return nil, fmt.Errorf("NIL private key")
+		return nil, nil, fmt.Errorf("NIL private key")
 	}
 
-	digest, err := b.Hash()
+	digest, err := b.hashBlock()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	signature, err := ecdsa.SignASN1(rand.Reader, privateKey, digest)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	log.Printf("SignBlock %v;\n\tHash: %x;\n\tSignature: %x\n\tPrivateKey: %v\n\tPublicKey: %v\n", b.Id, digest, signature, privateKey, privateKey.PublicKey)
-	return signature, nil
+	return digest, signature, nil
 }
 
 func (b *Block) VerifyBlock(pubKey []byte, sig []byte) error {
-	digest, err := b.Hash()
+	digest, err := b.hashBlock()
 	if err != nil {
 		return err
 	}
@@ -126,8 +129,6 @@ func (b *Block) VerifyBlock(pubKey []byte, sig []byte) error {
 		return fmt.Errorf("Error decoding ECDSA public key; %v", err)
 	}
 
-	log.Printf("VerifyBlock %v;\n\tHash: %x;\n\tSignature: %x\n\tPublicKey: %v\n", b.Id, digest, sig, publicKey)
-
 	ok := ecdsa.VerifyASN1(publicKey, digest, sig)
 	if !ok {
 		return fmt.Errorf("Invalid signature")
@@ -136,15 +137,5 @@ func (b *Block) VerifyBlock(pubKey []byte, sig []byte) error {
 }
 
 func (b *Block) String() string {
-	header := fmt.Sprintf("Block<id=%v, owner=%v>", b.Id, b.Owner)
-
-	var str strings.Builder
-	str.WriteString(header)
-	str.WriteString("\n")
-
-	for _, t := range b.Transactions {
-		str.WriteString(t.String())
-		str.WriteString("\n")
-	}
-	return str.String()
+	return fmt.Sprintf("\nBlock<id=%v, owner=%v>\n", b.Id, b.Owner)
 }

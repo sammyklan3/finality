@@ -5,11 +5,12 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/md5"
-	crand "crypto/rand"
+	"crypto/rand"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
-	"math/rand/v2"
+	"log"
+	mrand "math/rand/v2"
 	"strings"
 	"time"
 )
@@ -37,13 +38,16 @@ func NewTransaction(sender, receiver string, amount uint) (*Transaction, error) 
 		return nil, fmt.Errorf("Transaction amount cannot be less than %v", MIN_TRANSACTION_AMOUNT)
 	}
 
-	return &Transaction{
-		Id:        rand.Uint(),
+	t := Transaction{
+		Id:        mrand.Uint(),
 		Sender:    sender,
 		Receiver:  receiver,
 		Amount:    amount,
 		Timestamp: time.Now(),
-	}, nil
+	}
+	log.Printf("%s\n", t)
+
+	return &t, nil
 }
 
 func (t Transaction) Valid() error {
@@ -71,7 +75,7 @@ func (t Transaction) Sign(privateKey ecdsa.PrivateKey) (string, error) {
 	digest := md5.Sum(data)
 
 	// Sign hashed data
-	signature, err := privateKey.Sign(crand.Reader, digest[:], crypto.MD5)
+	signature, err := privateKey.Sign(rand.Reader, digest[:], crypto.MD5)
 	if err != nil {
 		return "", err
 	}
@@ -79,5 +83,5 @@ func (t Transaction) Sign(privateKey ecdsa.PrivateKey) (string, error) {
 }
 
 func (t Transaction) String() string {
-	return fmt.Sprintf("Transaction[id=%v, sender=%v, receiver=%v, amount=%v, timestamp=%v]", t.Id, t.Sender, t.Receiver, t.Amount, t.Timestamp)
+	return fmt.Sprintf("Transaction<id=%v>\n\tsender=%v\n\treceiver=%v\n\tamount=%v\n\ttimestamp=%v>", t.Id, t.Sender, t.Receiver, t.Amount, t.Timestamp)
 }

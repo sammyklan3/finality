@@ -1,62 +1,23 @@
+package main
+
 // The client is going to be run on organizations servers.
 // It will be responsible for collecting transactions from the database or API,
 // building transactions into blocks and sending full blocks to the
 // blockchain server.
 
-package main
-
 import (
 	"bytes"
-	"encoding/gob"
+	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"math"
-	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/sammyklan3/finality/blockchain"
-	"github.com/sammyklan3/finality/blockchain/utils"
 	"github.com/sammyklan3/finality/blockchain/utils/mcrypto"
-)
-
-var (
-	organizations = []string{
-		"JPMorgan Chase & Co.",
-		"Goldman Sachs",
-		"Bank of America",
-		"Citigroup",
-		"HSBC Holdings",
-	}
-	names = []string{
-		"Alice Johnson",
-		"Bob Smith",
-		"Charlie Williams",
-		"Diana Evans",
-		"Ethan Brown",
-		"Fiona Davis",
-		"George Miller",
-		"Hannah Wilson",
-		"Ian Clark",
-		"Julia Lewis",
-		"Kevin Hall",
-		"Lara Young",
-		"Michael King",
-		"Nora Scott",
-		"Oliver Adams",
-		"Paula Turner",
-		"Quentin Baker",
-		"Rachel Harris",
-		"Samuel Allen",
-		"Tina Martin",
-	}
 )
 
 var (
@@ -66,55 +27,6 @@ var (
 func init() {
 	flag.StringVar(&remote, "remote", "localhost:5000", "Remote server to send signed blocks to")
 	flag.Parse()
-}
-
-func randomChoice[T any](arr []T) *T {
-	if len(arr) == 0 {
-		return nil
-	}
-	index := rand.IntN(len(arr))
-	return &arr[index]
-}
-
-func generateTransaction() (*blockchain.Transaction, error) {
-	sender := randomChoice(names)
-	receiver := randomChoice(names)
-	if sender == nil || receiver == nil {
-		return nil, fmt.Errorf("Error selecting random sender or receiver; NIL values. Please fill in the names array with valid data")
-	}
-
-	amount := rand.UintN(math.MaxUint16)
-
-	t, err := blockchain.NewTransaction(*sender, *receiver, amount)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating new transaction; %v", err)
-	}
-	return t, nil
-}
-
-func generateFullBlock(wallet blockchain.Wallet) (*blockchain.Block, error) {
-	block, err := blockchain.NewBlock(0, "000000", wallet.Owner)
-	if err != nil {
-		return nil, fmt.Errorf("Error generating new block; %v", err)
-	}
-
-	privateKey, err := wallet.PrivateKey()
-	if err != nil {
-		return nil, fmt.Errorf("Error fetching wallet private key; %v\n", err)
-	}
-
-	for range blockchain.MAX_BLOCK_SIZE {
-		t, err := generateTransaction()
-		if err != nil {
-			return nil, fmt.Errorf("Error generating random transaction; %v", err)
-		}
-
-		err = block.AddTransaction(*t, *privateKey)
-		if err != nil {
-			return nil, fmt.Errorf("Error adding transaction to block; %v", err)
-		}
-	}
-	return block, nil
 }
 
 func printResponse(response *http.Response) {
@@ -136,23 +48,13 @@ func printResponse(response *http.Response) {
 	fmt.Println()
 }
 
-func sendFullBlock(block blockchain.Block, wallet blockchain.Wallet, address string) error {
+func sendSignedBlocks(signedBlock blockchain.SignedBlock, address string) error {
 	url := fmt.Sprintf("http://%v/blocks", address)
 	fmt.Printf("Sending signed block to %v\n", url)
 
-	privateKey, err := wallet.PrivateKey()
-	if err != nil {
-		return err
-	}
-
-	signedBlock, err := blockchain.NewSignedBlock(block, privateKey)
-	if err != nil {
-		return fmt.Errorf("Error signing block; %v", err)
-	}
-
 	var requestBody bytes.Buffer
 
-	err = json.NewEncoder(&requestBody).Encode(signedBlock)
+	err := json.NewEncoder(&requestBody).Encode(signedBlock)
 	if err != nil {
 		return err
 	}
@@ -224,62 +126,13 @@ func sendRegisterRequest(wallet blockchain.Wallet, address string) error {
 	return nil
 }
 
-// Tries reading gob saved wallet from file, or creates new wallet
-// and writes it to the file if it does not exist within file
-func getOrCreateWallet(owner string) (*blockchain.Wallet, error) {
-	filename := filepath.Join(utils.SecretsDir, fmt.Sprintf("%v.wallet", owner))
-
-	// Open file for read/write, create if not exists
-	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0600)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	// Try reading wallet from file
-	var wallet blockchain.Wallet
-	err = gob.NewDecoder(file).Decode(&wallet)
-	if err == nil {
-		return &wallet, nil // successfully decoded
-	}
-
-	// If file is empty (new), create a new wallet
-	if errors.Is(err, io.EOF) {
-		newWallet, err := blockchain.NewWallet(owner)
-		if err != nil {
-			return nil, fmt.Errorf("Error creating new wallet; %v", err)
-		}
-
-		// Reset file before writing
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			return nil, err
-		}
-		if err := file.Truncate(0); err != nil {
-			return nil, err
-		}
-
-		enc := gob.NewEncoder(file)
-		if err := enc.Encode(newWallet); err != nil {
-			return nil, err
-		}
-
-		return newWallet, nil
-	}
-
-	// Any other decode error means corruption
-	return nil, fmt.Errorf("failed to decode wallet: %w", err)
-}
-
-func createRandomWallet() (*blockchain.Wallet, error) {
+func main() {
 	owner := randomChoice(organizations)
 	if owner == nil {
-		return nil, fmt.Errorf("Error selecting random owner; NIL value. Please fill in organizations array with valid data")
+		log.Fatalln("Error selecting random owner; NIL value. Please fill in organizations array with valid data")
 	}
-	return getOrCreateWallet(*owner)
-}
 
-func main() {
-	wallet, err := createRandomWallet()
+	wallet, err := blockchain.GetOrCreateWallet(*owner)
 	if err != nil {
 		log.Fatalf("Error creating client wallet; %v\n", err)
 	}
@@ -289,14 +142,28 @@ func main() {
 		log.Fatalf("Error registering owner; %v\n", err)
 	}
 
-	block, err := generateFullBlock(*wallet)
+	b, err := blockchain.NewBlockchain(*wallet)
 	if err != nil {
-		log.Fatalf("Error generating full block; %v\n", err)
+		log.Fatalf("Error generating new blockchain; %v\n", err)
 	}
 
-	err = sendFullBlock(*block, *wallet, remote)
-	if err != nil {
-		log.Fatalf("Error sending signed block to %v; %v\n", remote, err)
+	signedBlocks := make(chan blockchain.SignedBlock, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// We are going to run a goroutine that
+	// is going to append signed blocks onto the blockchain
+
+	go generateBlocks(ctx, b, signedBlocks)
+
+	// Capture generated signed blocks and send to server for syncing
+	for {
+		signedBlock := <-signedBlocks
+
+		err = sendSignedBlocks(signedBlock, remote)
+		if err != nil {
+			log.Fatalf("Error sending signed block to %v; %v\n", remote, err)
+		}
 	}
 
 }

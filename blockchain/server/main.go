@@ -1,3 +1,5 @@
+package main
+
 // The server is going to be responsible for receiving blocks from
 // clients, verifying all transactions within that block and appending
 // it to the blockchain.
@@ -5,8 +7,6 @@
 // any received blocks among several interconnected peers. This arhitecture
 // ensures availability; such that even if one node fails, the rest of the nodes
 // on the cluster can continue serving client requests.
-
-package main
 
 import (
 	"encoding/json"
@@ -29,14 +29,6 @@ var (
 	// Models
 	organizations *database.OrganizationsTable = database.NewOrganizationTable()
 )
-
-func init() {
-	var err error
-	b, err = blockchain.NewBlockchain("GLOBAL_BLOCKCHAIN")
-	if err != nil {
-		log.Fatalf("Error creating server blockchain; %v\n", err)
-	}
-}
 
 func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -127,10 +119,21 @@ func receiveBlockHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("Current block; %v\n", signedBlock.Id)
 	jsonResponse(w, http.StatusOK, map[string]string{"message": "Good block"})
 }
 
 func main() {
+	wallet, err := blockchain.GetOrCreateWallet("GLOB_BLOCKCHAIN")
+	if err != nil {
+		log.Fatalf("Error creating server wallet; %v\n", err)
+	}
+
+	b, err = blockchain.NewBlockchain(*wallet)
+	if err != nil {
+		log.Fatalf("Error creating server blockchain; %v\n", err)
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 
@@ -140,7 +143,7 @@ func main() {
 	address := "localhost:5000"
 	log.Printf("Starting blockchain server on address %v...\n", address)
 
-	err := http.ListenAndServe(address, r)
+	err = http.ListenAndServe(address, r)
 	if err != nil {
 		log.Fatalf("Error starting web server; %v\n", err)
 	}
