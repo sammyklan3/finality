@@ -1,92 +1,90 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"flag"
-	"fmt"
-	"log"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
+    "crypto/ecdsa"
+    "crypto/elliptic"
+    "crypto/rand"
+    "flag"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
 
-	"finality/internal/p2p"
+    "finality/internal/core"
+    "finality/internal/p2p"
 )
 
 func main() {
-	// Command-line flags
-	udpPort := flag.Int("udp-port", 30303, "UDP port for peer discovery")
-	tcpPort := flag.Int("tcp-port", 30304, "TCP port for node connections")
-	bootstrapPeers := flag.String("bootnodes", "", "Comma-separated list of bootstrap peers (ip:port)")
-	flag.Parse()
+    // CLI flags
+    port := flag.Int("port", 3000, "Port to run the node on")
+    peer := flag.String("peer", "", "Address of a peer to connect to")
+    difficulty := flag.Int("difficulty", 2, "Mining difficulty")
+    mineInterval := flag.Int("mineInterval", 10, "Mining interval in seconds")
+    flag.Parse()
 
-	// Parse bootstrap peers into a slice BEFORE usage
-	var bootnodes []string
-	if *bootstrapPeers == "" {
-		bootnodes = []string{"127.0.0.1:30303"} // or any known bootstrap node IP:port
-	} else {
-		bootnodes = splitAndTrim(*bootstrapPeers)
-	}
+    // Generate node's private key
+    privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+    if err != nil {
+        log.Fatalf("Failed to generate node key: %v", err)
+    }
+    kp := &core.KeyPair{PrivateKey: privKey}
 
-	// Generate ECDSA private key for the node
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		log.Fatalf("Failed to generate node key: %v", err)
-	}
+    // Initialize blockchain & mempool
+    bc := core.NewBlockchain()
+    mempool := core.NewMempool()
 
-	chainID := "finality-mainnet" // or configurable
+    // Initialize P2P node
+    node := p2p.NewNode(*port, bc, mempool)
+    if *peer != "" {
+        go func() {
+            if err := node.Connect(*peer); err != nil {
+                log.Printf("Failed to connect to peer: %v", err)
+            }
+        }()
+    }
 
-	listenTCPAddr := fmt.Sprintf("0.0.0.0:%d", *tcpPort)
+    // Start P2P listener
+    go func() {
+        if err := node.Start(); err != nil {
+            log.Fatalf("P2P node error: %v", err)
+        }
+    }()
 
-	node := p2p.NewNode(privKey, chainID, listenTCPAddr)
+    // Example: simulate adding a dummy transaction every 15s
+    go func() {
+        for {
+            tx := core.NewTransaction("Alice", "Bob", 1, privKey)
+            if mempool.AddTransaction(tx) {
+                log.Printf("Transaction %s added to mempool", tx.Hash())
+                node.BroadcastTransaction(tx) // send to peers
+            }
+            time.Sleep(15 * time.Second)
+        }
+    }()
 
-	if err := node.Start(); err != nil {
-		log.Fatalf("Failed to start TCP server: %v", err)
-	}
+    // Mining loop
+    go func() {
+        for {
+            txs := mempool.GetTransactionsForBlock(100)
+            if len(txs) > 0 {
+                if err := bc.AddBlock(txs, kp, *difficulty); err != nil {
+                    log.Printf("Mining error: %v", err)
+                } else {
+                    log.Printf("Mined new block with %d transactions", len(txs))
+                    mempool.RemoveTransactions(txs)
+                    node.BroadcastBlock(bc.LastBlock())
+                }
+            }
+            time.Sleep(time.Duration(*mineInterval) * time.Second)
+        }
+    }()
 
-	// Connect to bootstrap peers discovered via UDP
-	for _, addr := range bootnodes {
-		go func(a string) {
-			if err := node.Connect(a); err != nil {
-				log.Printf("Failed to connect to peer %s: %v", a, err)
-			}
-		}(addr)
-	}
-
-	// Derive node ID as sha256(pubkeyBytes)
-	pubKeyBytes := append(privKey.PublicKey.X.Bytes(), privKey.PublicKey.Y.Bytes()...)
-	nodeID := sha256.Sum256(pubKeyBytes)
-	nodeIDHex := hex.EncodeToString(nodeID[:])
-
-	fmt.Printf("Node ID: %s\n", nodeIDHex)
-
-	// Start UDP discovery with generated NodeID
-	listenAddr := fmt.Sprintf("0.0.0.0:%d", *udpPort)
-	discovery, err := p2p.NewDiscovery(nodeIDHex, listenAddr, bootnodes)
-	if err != nil {
-		log.Fatalf("Failed to start discovery: %v", err)
-	}
-	discovery.Start()
-	defer discovery.Stop()
-
-	fmt.Printf("Finality node started.\nUDP discovery listening on %s\nTCP connections will listen on 0.0.0.0:%d\n", listenAddr, *tcpPort)
-
-	// Graceful shutdown on Ctrl+C
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	<-sigs
-	fmt.Println("\nShutting down node...")
-}
-
-// Helper to split comma-separated bootstrap peers and trim spaces
-func splitAndTrim(s string) []string {
-	var res []string
-	for _, p := range strings.Split(s, ",") {
-		res = append(res, strings.TrimSpace(p))
-	}
-	return res
+    // Graceful shutdown handling
+    sigs := make(chan os.Signal, 1)
+    signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+    <-sigs
+    log.Println("Shutting down node...")
+    node.Stop()
 }
